@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cassert>
 #include <dirent.h>
+#include <signal.h>
 #include <fstream>
 #include <vector>
 #include <json/value.h>
@@ -14,17 +15,20 @@
 #include "include/rados/librados.hpp"
 #include <curl/curl.h>
 #include <chrono>
+#include <unistd.h>
 
 #define MAXBUFLEN 1000000
 
 using namespace std;
 namespace po = boost::program_options;
 namespace path = boost::filesystem;
+void * curl;
 
 /*
  * Global variables
  */
-string docker_skt, container_id, username, container_name;
+string docker_skt, container_id, username, container_name, filename;
+char mode;
 Json::Value mdss;
 
 /*
@@ -38,7 +42,9 @@ void parse_args(int argc, char**argv)
     ("help", "Produce help message")
     ("docker_skt", po::value<string>(&docker_skt)->default_value("/var/run/docker.sock"), "Socket of Docker daemon")
     ("username", po::value<string>(&username)->default_value("root"), "Username for SSHing around")
-    ("container_name", po::value<string>(&container_name)->default_value("my_container"), "Name of the container");
+    ("container_name", po::value<string>(&container_name)->default_value("my_container"), "Name of the container")
+    ("filename", po::value<string>(&filename)->default_value("file.txt"), "Name of the container inode file")
+    ("mode", po::value<char>(&mode)->default_value('w'), "Load mode, can be r or w for read or write, respectively");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   try { po::notify(vm); }
@@ -57,6 +63,7 @@ void parse_args(int argc, char**argv)
   cout << "  Docker socket = " << docker_skt << endl;
   cout << "  Username = " << username << endl;
   cout << "  Container name = " << container_name << endl;
+  cout << "  Metadata Load Mode = " << mode << endl;
   cout << "================================" << endl; 
 }
 
@@ -70,7 +77,7 @@ string ip(string mds_gid)
 }
 
 /*
- * Get a the metadata server name from the stat json
+ * Get the metadata server name from the stat json
  */
 string name(string mds_gid)
 {
@@ -78,33 +85,34 @@ string name(string mds_gid)
 }
 
 /*
- * Check which metadata server owns the spath
+ * Get status of metadata cluster
  */
-string check_subtree(path::path spath) 
+void mds_stats()
 {
-  /*
-   * Connect to ceph
-   */
+  /* connect to Ceph */
   librados::Rados cluster;
   uint64_t flags;
   assert(!cluster.init2("client.admin", "ceph", flags));
   assert(!cluster.conf_read_file(NULL));
   assert(!cluster.connect());
 
-  /*
-   * Get status of metadata cluster
-   */
+  /* issue command */
   ceph::bufferlist outbl, inbl;
   string outstring;
   Json::Reader reader;
-
-  /* issue command */
   assert(!cluster.mon_command("{\"prefix\": \"mds stat\", \"format\": \"json\"}", inbl, &outbl, NULL));
-
-  /* parse out mdss */
   reader.parse(outbl.c_str(), mdss);
-  cluster.shutdown();
 
+  /* cleanup Ceph connection */
+  cluster.shutdown();
+}
+
+/*
+ * Figure out which metadata server owns the given container inode (cinode)
+ * - returns the metadata server gid
+ */
+string mds_subtree(path::path cinode) 
+{
   /*
    * Get the group IDs for active metadata servers
    */
@@ -135,6 +143,7 @@ string check_subtree(path::path spath)
     fread(buff, 1, MAXBUFLEN, f);
 
     /* parse out subtrees */
+    Json::Reader reader;
     reader.parse(buff, tree);
     trees.push_back(pair<string, Json::Value>(mds, tree));
   }
@@ -145,10 +154,9 @@ string check_subtree(path::path spath)
    * - otherwise take the longest path, which is the subtree for our search path
    */
   string auth = "";
-  string mds0 = mdss["fsmap"]["filesystems"][0]["mdsmap"]["info"][mds_gids.at(0)]["name"].asString();
-  pair<string, path::path> max_path = make_pair(mds0, path::path(""));
+  pair<string, path::path> max_path = make_pair(mds_gids.at(0), path::path(""));
 
-  /* search for spath AND save state for finding max path length */
+  /* search for cinode AND save state for finding max path length */
   for (auto& tree : trees) {
     int n = tree.second.size();
     for (int i = 0; i < n; i++) {
@@ -156,13 +164,13 @@ string check_subtree(path::path spath)
       bool is_auth = tree.second[i]["dir"]["is_auth"].asBool();
 
       /* if the metadata server has our full path, save it */
-      if (is_auth && spath == p)
+      if (is_auth && cinode == p)
         auth = tree.first;
 
       /* save path if it is the largest (in case we don't find exact match) */
       if (is_auth &&
           p.size() > max_path.second.size() &&
-          equal(p.begin(), p.end(), spath.begin())) {
+          equal(p.begin(), p.end(), cinode.begin())) {
         max_path = make_pair(tree.first, p); 
       }
     }
@@ -172,37 +180,12 @@ string check_subtree(path::path spath)
   if (auth == "")
     auth = max_path.first;
 
+  if (auth == "") {
+    cerr << "ERROR: could not get subtree authority for cinode=" << cinode << endl;
+    exit(EXIT_FAILURE);
+  }
+
   return auth;
-}
-
-/*
- * Tie a container to an inode
- */
-path::path create_container_inode()
-{
-  /* 
-  * Connect to CephFS
-  */
-  struct ceph_mount_info *cmount;
-  assert(!ceph_create(&cmount, "admin"));
-  ceph_conf_read_file(cmount, NULL);
-  ceph_conf_parse_env(cmount, NULL);
-  assert(!ceph_mount(cmount, "/"));
-  
-  /*
-   * Create some fake data
-   */
-  string s = "/containers/" + container_name;
-  ceph_mkdir(cmount, "containers", 0644);
-  ceph_mkdir(cmount, s.c_str(), 0644);
-   
-  /*
-   * Cleanup 'errbody
-   */
-  ceph_unmount(cmount);
-  ceph_release(cmount);
-
-  return path::path(s);
 }
 
 /*
@@ -218,7 +201,7 @@ size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream) {
 /*
  * Get list of running containers
  */
-void docker_ps(void *curl, string docker_url)
+void docker_ps(string docker_url)
 {
   /* Point at Docker */
   string target = docker_url + "/containers/json";
@@ -233,7 +216,8 @@ void docker_ps(void *curl, string docker_url)
   /* Execute command */
   CURLcode ret = curl_easy_perform(curl);
   if (ret != CURLE_OK)
-    cerr << "ERROR: " << curl_easy_strerror(ret) << endl;
+    cerr << "ERROR: docker ps: " << curl_easy_strerror(ret) 
+         << "\n\t target=" << target << endl;
 
   /* Get it into JSON */
   Json::Value docker_ps;
@@ -250,7 +234,7 @@ void docker_ps(void *curl, string docker_url)
 /*
  * Start a container on the remote node
  */
-void docker_create(void *curl, string docker_url)
+void docker_create(string docker_url)
 {
    /* Point at Docker */
   string target = docker_url + "/containers/create?name=" + container_name;
@@ -279,7 +263,8 @@ void docker_create(void *curl, string docker_url)
   /* Execute command */
   CURLcode ret = curl_easy_perform(curl);
   if (ret != CURLE_OK)
-    cerr << "ERROR: " << curl_easy_strerror(ret) << endl;
+    cerr << "ERROR: starting container: " << curl_easy_strerror(ret)
+         << "\n\t target=" << target << endl;
 
   /* Get it into JSON */
   Json::Value docker_start;
@@ -289,13 +274,14 @@ void docker_create(void *curl, string docker_url)
 
   container_id = docker_start["Id"].asString();
   if (container_id == "") {
-    cerr << "ERROR: " << out.str() << endl;  
+    cerr << "ERROR starting container: " << out.str() << endl;  
     exit(EXIT_FAILURE);
   }
   cout << "-- Creating containers:" << container_id << endl;
 }
 
-void docker_start(void* curl, string docker_url) {
+void docker_start(string docker_url)
+{
    /* Point at Docker */
   cout << "-- Starting containers:" << container_id << endl;
   string target = docker_url + "/containers/" + container_id + "/start";
@@ -311,11 +297,12 @@ void docker_start(void* curl, string docker_url) {
   /* Execute command */
   CURLcode ret = curl_easy_perform(curl);
   if (ret != CURLE_OK)
-    cerr << "ERROR: " << curl_easy_strerror(ret) << endl;
+    cerr << "ERROR: docker start: " << curl_easy_strerror(ret)
+         << "\n\t target=" << target << endl;
   curl_easy_reset(curl);
 }
 
-void docker_rm(void *curl, string docker_url)
+void docker_rm(string docker_url)
 {
   /* Point at Docker */
   string target = docker_url + "/containers/" + container_id + "?force=true";
@@ -331,48 +318,210 @@ void docker_rm(void *curl, string docker_url)
   /* Execute command */
   CURLcode ret = curl_easy_perform(curl);
   if (ret != CURLE_OK)
-    cerr << "ERROR: " << curl_easy_strerror(ret) << endl;
+    cerr << "ERROR: docker rm: " << curl_easy_strerror(ret)
+         << "\n\t target=" << target << endl;
   cout << "-- Removed containers:" << endl;
   cout << "  " << out.str() << "\n" << endl;
   curl_easy_reset(curl);
 } 
 
-int main(int argc, char **argv)
+volatile sig_atomic_t flag = 0;
+void interrupt(int sig)
 {
-  parse_args(argc, argv);
+  if (sig == SIGINT) {
+    flag = 1;
+    cout << "... OUCH!" << endl;
+  }
+}
 
-  /* Set up curl */
+/*
+ * Make metadata load until we receive an interrupt
+ */
+void create_metadata_load()
+{
+  /* connect to CephFS */
+  struct ceph_mount_info *cmount;
+  assert(!ceph_create(&cmount, "admin"));
+  ceph_conf_read_file(cmount, NULL);
+  ceph_conf_parse_env(cmount, NULL);
+  assert(!ceph_mount(cmount, "/"));
+
+  /* create metadata load */
+  string file = "/containers/" + container_name + "/" + filename;
+  switch (mode) {
+    case 'w':
+      while(!flag) {
+        int fd = ceph_open(cmount, file.c_str(), O_CREAT|O_RDWR, 0644);
+        ceph_close(cmount, fd);
+        assert(!ceph_unlink(cmount, file.c_str()));
+      }
+      break;
+    case 'r':
+      int fd = ceph_open(cmount, file.c_str(), O_CREAT|O_RDWR, 0644);
+      assert(fd >= 0);
+      while (!flag)
+        ceph_lseek(cmount, fd, 0, SEEK_END);
+      break;
+  }
+
+  cout << "INFO: cleaning up metadata load CephFS connection" << endl;
+  assert(!ceph_unmount(cmount));
+  assert(!ceph_release(cmount));
+}
+
+/*
+ * Monitor the container inode and migrate container if it moves
+ */
+void docker_monitor(path::path cinode)
+{
+  /* set up curl */
   curl_global_init(CURL_GLOBAL_DEFAULT);
-  void *curl = curl_easy_init();  
+  curl = curl_easy_init();  
 
-  /* Tie container to inode */
-  path::path spath = create_container_inode();
-  string mds_gid = check_subtree(spath); 
-  cout << "... container tied to spath=" << spath 
-       << " on mds." << name(mds_gid) << endl;
-
-  /* Start container on target metadata server */
-  docker_create(curl, ip(mds_gid));
-  docker_start(curl, ip(mds_gid));
-  docker_ps(curl, ip(mds_gid));
-
-  while (1) {
-    string new_mds_gid = check_subtree(spath);
-    cout << "INFO: container " << container_name << " with path " << spath << " is on mds." << name(new_mds_gid) << endl;;
+  /* start monitoring */
+  string mds_gid = mds_subtree(cinode);
+  while(!flag) {
+    string new_mds_gid = mds_subtree(cinode);
+    cout << "INFO: container " << container_name << " with path "
+         << cinode << " is on mds." << name(new_mds_gid) << endl;
     if (new_mds_gid != mds_gid) {
-      cout << " INFO: inode has moved from mds." << name(mds_gid)
+      cout << "INFO: inode has moved from mds." << name(mds_gid)
            << " to mds." << name(new_mds_gid) << "." << endl;
-      docker_rm(curl, ip(mds_gid));
-      docker_create(curl, ip(new_mds_gid));
-      docker_start(curl, ip(new_mds_gid));
-      docker_ps(curl, ip(new_mds_gid));
+      docker_rm(ip(mds_gid));
+      docker_create(ip(new_mds_gid));
+      docker_start(ip(new_mds_gid));
+      docker_ps(ip(new_mds_gid));
       mds_gid = new_mds_gid;
     }
     boost::this_thread::sleep( boost::posix_time::seconds(1));
   }
 
-  /* This leaves "still reachable" blocks; too lazy to fix */
+  cout << "INFO: cleaning cURL" << endl;
   curl_easy_cleanup(curl);
   curl_global_cleanup();
+}
+
+/*
+ * Tie a container to an inode
+ */
+path::path create_container_inode()
+{
+  /* connect to CephFS */
+  struct ceph_mount_info *cmount;
+  assert(!ceph_create(&cmount, "admin"));
+  ceph_conf_read_file(cmount, NULL);
+  ceph_conf_parse_env(cmount, NULL);
+  assert(!ceph_mount(cmount, "/"));
+
+  /* create the container inode */
+  string dir = "/containers/" + container_name;
+  ceph_mkdirs(cmount, dir.c_str(), 0644);
+  string file = "/containers/" + container_name + "/" + filename;
+  path::path cinode = path::path(dir);
+
+  /* tie container to inode */
+  string mds_gid = mds_subtree(cinode); 
+  cout << "... container tied to cinode=" << cinode 
+       << " on mds." << name(mds_gid) << " ip=" << ip(mds_gid) << endl;
+
+  /* start container on target metadata server */
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  curl = curl_easy_init();  
+  docker_create(ip(mds_gid));
+  docker_start(ip(mds_gid));
+  docker_ps(ip(mds_gid));
+
+  /* cleanup 'errbody */
+  curl_easy_cleanup(curl);
+  curl_global_cleanup();
+  assert(!ceph_unmount(cmount));
+  assert(!ceph_release(cmount));
+  return path::path(cinode);
+}
+
+int main(int argc, char **argv)
+{
+//  /* 
+//  * Connect to CephFS
+//  */
+//  assert(!ceph_create(&cmount, "admin"));
+//  ceph_conf_read_file(cmount, NULL);
+//  ceph_conf_parse_env(cmount, NULL);
+//  assert(!ceph_mount(cmount, "/"));
+//
+//  /*
+//   * Connect to Ceph
+//   */
+//  uint64_t flags;
+//  assert(!cluster.init2("client.admin", "ceph", flags));
+//  assert(!cluster.conf_read_file(NULL));
+//  assert(!cluster.connect());
+//
+  parse_args(argc, argv);
+  mds_stats();
+  path::path cinode = create_container_inode();
+  cout << "INFO: created cinode=" << cinode << endl;
+//
+//  /*
+//   * Cleanup 'errbody
+//   */
+//  cout << "INFO: cleaning CephFS" << endl;
+//  assert(!ceph_unmount(cmount));
+//  assert(!ceph_release(cmount));
+//
+//  cout << "INFO: cleaning Ceph" << endl;
+//  cluster.shutdown();
+//
+//  cout << "INFO: cleaning cURL" << endl;
+//  curl_easy_cleanup(curl);
+//  curl_global_cleanup();
+//
+
+  /*
+   * This works!! Can't have two processes (part of the same client) open and
+   * doing CephFS shit at the same time. One of them needs to drop the talking
+   * stick
+   */
+
+  signal(SIGINT, interrupt);
+  pid_t pid = fork();
+  if (pid) {
+    while (!flag) {
+      create_metadata_load();
+      ///* 
+      //* Connect to CephFS
+      //*/
+      //struct ceph_mount_info *cmount;
+      //assert(!ceph_create(&cmount, "admin"));
+      //ceph_conf_read_file(cmount, NULL);
+      //ceph_conf_parse_env(cmount, NULL);
+      //assert(!ceph_mount(cmount, "/"));
+
+      //cout << "... in the parent" << endl;
+      //boost::this_thread::sleep( boost::posix_time::seconds(1));
+      //ceph_mkdir(cmount, "/blah", 0644);
+      //assert(!ceph_unmount(cmount));
+      //assert(!ceph_release(cmount));
+    }
+  }
+  else if (!pid) {
+    while (!flag) {
+      docker_monitor(cinode);
+      ///* 
+      //* Connect to CephFS
+      //*/
+      //struct ceph_mount_info *cmount;
+      //assert(!ceph_create(&cmount, "admin"));
+      //ceph_conf_read_file(cmount, NULL);
+      //ceph_conf_parse_env(cmount, NULL);
+      //assert(!ceph_mount(cmount, "/"));
+
+      //cout << "... in the child" << endl;
+      //boost::this_thread::sleep( boost::posix_time::seconds(1));
+      //ceph_mkdir(cmount, "/blah", 0644);
+      //assert(!ceph_unmount(cmount));
+      //assert(!ceph_release(cmount));
+    }
+  }
   return 0;
 }
