@@ -27,9 +27,10 @@ void * curl;
 /*
  * Global variables
  */
-string docker_skt, container_id, username, container_name, filename;
+string docker_skt, container_id, username, container_name, container_conf;
 char mode;
 Json::Value mdss;
+int debug;
 
 /*
  * Om nom some args
@@ -43,14 +44,15 @@ void parse_args(int argc, char**argv)
     ("docker_skt", po::value<string>(&docker_skt)->default_value("/var/run/docker.sock"), "Socket of Docker daemon")
     ("username", po::value<string>(&username)->default_value("root"), "Username for SSHing around")
     ("container_name", po::value<string>(&container_name)->default_value("my_container"), "Name of the container")
-    ("filename", po::value<string>(&filename)->default_value("file.txt"), "Name of the container inode file")
-    ("mode", po::value<char>(&mode)->default_value('w'), "Load mode, can be r or w for read or write, respectively");
+    ("mode", po::value<char>(&mode)->default_value('w'), "Load mode, can be r or w for read or write, respectively")
+    ("debug", po::value<int>(&debug)->default_value(0), "Turn on debugging")
+    ("container_conf", po::value<string>(&container_conf)->required(), "JSON file with args for container");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   try { po::notify(vm); }
   catch (exception const& e) {
-    cerr << "ERROR: try running with --help\n" << endl;
     cerr << boost::diagnostic_information(e) << endl;
+    cout << desc << "\n";
     exit (EXIT_FAILURE);
   }
 
@@ -63,7 +65,9 @@ void parse_args(int argc, char**argv)
   cout << "  Docker socket = " << docker_skt << endl;
   cout << "  Username = " << username << endl;
   cout << "  Container name = " << container_name << endl;
+  cout << "  Container conf = " << container_conf << endl;
   cout << "  Metadata Load Mode = " << mode << endl;
+  cout << "  Debug = " << debug << endl;
   cout << "================================" << endl; 
 }
 
@@ -162,15 +166,28 @@ string mds_subtree(path::path cinode)
     for (int i = 0; i < n; i++) {
       path::path p = path::path(tree.second[i]["dir"]["path"].asString());
       bool is_auth = tree.second[i]["dir"]["is_auth"].asBool();
+      if (debug > 1)
+        cout << "  mds_sbutree INFO: checking if "
+             << " p=" << p << " is a parent or equal to cinode=" << cinode << endl;
 
       /* if the metadata server has our full path, save it */
-      if (is_auth && cinode == p)
+      if (is_auth && cinode == p) {
+        cout << "  mds_subtree INFO: found exact match;"
+             << " is_auth=" << is_auth
+             << " cinode=" << cinode << " p=" << p << endl;
         auth = tree.first;
+      }
 
       /* save path if it is the largest (in case we don't find exact match) */
       if (is_auth &&
           p.size() > max_path.second.size() &&
           equal(p.begin(), p.end(), cinode.begin())) {
+        if (debug > 0)
+          cout << "  mds_subtree INFO: found new max;"
+               << " p=" << p 
+               << " prev=" << max_path.second 
+               << " p is subpath of cinode=" << cinode
+               << endl;
         max_path = make_pair(tree.first, p); 
       }
     }
@@ -250,14 +267,12 @@ void docker_create(string docker_url)
   struct curl_slist *headers = NULL;
   headers = curl_slist_append(headers, "Accept: application/json");
   headers = curl_slist_append(headers, "Content-Type: application/json");
-  string args = "{ \
-                   \"Image\":\"tutum/ubuntu:trusty\", \
-                   \"Detach\":true, \
-                   \"Tty\":true, \
-                   \"Entrypoint\":\"/bin/bash\" \
-                 }";
   curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+  ifstream t(container_conf);
+  string args((istreambuf_iterator<char>(t)),
+               istreambuf_iterator<char>());
   curl_easy_setopt(curl, CURLOPT_POSTFIELDS, args.c_str());
 
   /* Execute command */
@@ -347,7 +362,7 @@ void create_metadata_load()
   assert(!ceph_mount(cmount, "/"));
 
   /* create metadata load */
-  string file = "/containers/" + container_name + "/" + filename;
+  string file = "/containers/" + container_name + "/cinode.txt";
   switch (mode) {
     case 'w':
       while(!flag) {
@@ -416,7 +431,7 @@ path::path create_container_inode()
   /* create the container inode */
   string dir = "/containers/" + container_name;
   ceph_mkdirs(cmount, dir.c_str(), 0644);
-  string file = "/containers/" + container_name + "/" + filename;
+  string file = "/containers/" + container_name + "/cinode.txt";
   path::path cinode = path::path(dir);
 
   /* tie container to inode */
@@ -436,92 +451,23 @@ path::path create_container_inode()
   curl_global_cleanup();
   assert(!ceph_unmount(cmount));
   assert(!ceph_release(cmount));
+
+  cout << "INFO: created cinode=" << cinode << endl;
   return path::path(cinode);
 }
 
 int main(int argc, char **argv)
 {
-//  /* 
-//  * Connect to CephFS
-//  */
-//  assert(!ceph_create(&cmount, "admin"));
-//  ceph_conf_read_file(cmount, NULL);
-//  ceph_conf_parse_env(cmount, NULL);
-//  assert(!ceph_mount(cmount, "/"));
-//
-//  /*
-//   * Connect to Ceph
-//   */
-//  uint64_t flags;
-//  assert(!cluster.init2("client.admin", "ceph", flags));
-//  assert(!cluster.conf_read_file(NULL));
-//  assert(!cluster.connect());
-//
   parse_args(argc, argv);
   mds_stats();
   path::path cinode = create_container_inode();
-  cout << "INFO: created cinode=" << cinode << endl;
-//
-//  /*
-//   * Cleanup 'errbody
-//   */
-//  cout << "INFO: cleaning CephFS" << endl;
-//  assert(!ceph_unmount(cmount));
-//  assert(!ceph_release(cmount));
-//
-//  cout << "INFO: cleaning Ceph" << endl;
-//  cluster.shutdown();
-//
-//  cout << "INFO: cleaning cURL" << endl;
-//  curl_easy_cleanup(curl);
-//  curl_global_cleanup();
-//
-
-  /*
-   * This works!! Can't have two processes (part of the same client) open and
-   * doing CephFS shit at the same time. One of them needs to drop the talking
-   * stick
-   */
 
   signal(SIGINT, interrupt);
   pid_t pid = fork();
-  if (pid) {
-    while (!flag) {
-      create_metadata_load();
-      ///* 
-      //* Connect to CephFS
-      //*/
-      //struct ceph_mount_info *cmount;
-      //assert(!ceph_create(&cmount, "admin"));
-      //ceph_conf_read_file(cmount, NULL);
-      //ceph_conf_parse_env(cmount, NULL);
-      //assert(!ceph_mount(cmount, "/"));
-
-      //cout << "... in the parent" << endl;
-      //boost::this_thread::sleep( boost::posix_time::seconds(1));
-      //ceph_mkdir(cmount, "/blah", 0644);
-      //assert(!ceph_unmount(cmount));
-      //assert(!ceph_release(cmount));
-    }
-  }
-  else if (!pid) {
-    while (!flag) {
-      docker_monitor(cinode);
-      ///* 
-      //* Connect to CephFS
-      //*/
-      //struct ceph_mount_info *cmount;
-      //assert(!ceph_create(&cmount, "admin"));
-      //ceph_conf_read_file(cmount, NULL);
-      //ceph_conf_parse_env(cmount, NULL);
-      //assert(!ceph_mount(cmount, "/"));
-
-      //cout << "... in the child" << endl;
-      //boost::this_thread::sleep( boost::posix_time::seconds(1));
-      //ceph_mkdir(cmount, "/blah", 0644);
-      //assert(!ceph_unmount(cmount));
-      //assert(!ceph_release(cmount));
-    }
-  }
+  if (pid)
+    create_metadata_load();
+  else if (!pid) 
+    docker_monitor(cinode);
+  cout << "INFO: EXITING" << endl;
   return 0;
 }

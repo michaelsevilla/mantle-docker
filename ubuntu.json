@@ -1,0 +1,6 @@
+{
+  "Image":"tutum/ubuntu:trusty",
+  "Detach":true,
+  "Tty":true,
+  "Entrypoint":"/bin/bash"
+}
