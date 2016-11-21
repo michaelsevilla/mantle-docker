@@ -1,3 +1,0 @@
-[submodule "images/docker-cephdev"]
-	path = images/docker-cephdev
-	url = https://github.com/systemslab/docker-cephdev.git
