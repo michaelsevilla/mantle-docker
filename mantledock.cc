@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 #define MAXBUFLEN 1000000
-#define VERSION 1.0.0
+#define VERSION "1.0.0"
 
 using namespace std;
 namespace po = boost::program_options;
@@ -32,6 +32,7 @@ string docker_skt, container_id, username, container_name, container_conf;
 char mode;
 Json::Value mdss;
 int debug;
+bool vstart;
 
 /*
  * Om nom some args
@@ -47,19 +48,20 @@ void parse_args(int argc, char**argv)
     ("container_name", po::value<string>(&container_name)->default_value("my_container"), "Name of the container")
     ("mode", po::value<char>(&mode)->default_value('w'), "Load mode, can be r or w for read or write, respectively")
     ("debug", po::value<int>(&debug)->default_value(0), "Turn on debugging")
+    ("vstart", po::value<bool>(&vstart)->default_value(false), "Use vstart")
     ("container_conf", po::value<string>(&container_conf)->required(), "JSON file with args for container");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   try { po::notify(vm); }
   catch (exception const& e) {
     cerr << boost::diagnostic_information(e) << endl;
-    cout << "Mantle Docker version " << version
+    cout << "Mantle Docker version " << VERSION
          << "\n" << desc << "\n";
     exit (EXIT_FAILURE);
   }
 
   if (vm.count("help")) {
-    cout << "Mantle Docker version " << version
+    cout << "Mantle Docker version " << VERSION
          << "\n" << desc << "\n";
     exit (EXIT_SUCCESS);
   }
@@ -71,6 +73,7 @@ void parse_args(int argc, char**argv)
   cout << "  Container conf = " << container_conf << endl;
   cout << "  Metadata Load Mode = " << mode << endl;
   cout << "  Debug = " << debug << endl;
+  cout << "  vstart = " << vstart << endl;
   cout << "================================" << endl; 
 }
 
@@ -120,6 +123,9 @@ void mds_stats()
  */
 string mds_subtree(path::path cinode) 
 {
+  if (debug > 1)
+    cout << "INFO: mds_subtree: got mdss" << mdss << endl;
+
   /*
    * Get the group IDs for active metadata servers
    */
@@ -129,6 +135,8 @@ string mds_subtree(path::path cinode)
     string mds_str = "mds_" + to_string(mds.asInt());
     int gid = mdss["fsmap"]["filesystems"][0]["mdsmap"]["up"][mds_str].asInt();
     mds_gids.push_back("gid_" + to_string(gid));
+    if (debug > 1)
+      cout << "INFO: mds_subtree: got mds_gids=gid_" << to_string(gid) << endl;
   }
 
   /*
@@ -139,9 +147,12 @@ string mds_subtree(path::path cinode)
     string name = mdss["fsmap"]["filesystems"][0]["mdsmap"]["info"][mds]["name"].asString();
 
     /* construct command to send to servers admin daemon socket */
-    string cmd = "ssh " + username + "@" + ip(mds) + " \
-                 \"docker exec ceph-dev /bin/bash -c \
-                 \'cd /ceph/build && bin/ceph daemon mds." + name + " get subtrees\'\" 2>/dev/null";
+    string cmd = "ssh " + username + "@" + ip(mds) + " \"docker exec ceph-dev /bin/bash -c \'";
+    if (vstart == true)
+      cmd += "cd /ceph/build && bin/";
+    cmd += "ceph daemon mds." + name + " get subtrees\'\" 2>/dev/null";
+    if (debug > 1)
+      cout << "INFO: mds_subtree: cmd=" << cmd << endl;
  
     /* issue command */
     char buff[MAXBUFLEN];
@@ -153,6 +164,8 @@ string mds_subtree(path::path cinode)
     Json::Reader reader;
     reader.parse(buff, tree);
     trees.push_back(pair<string, Json::Value>(mds, tree));
+    if (debug > 1)
+      cout << "INFO: mds_subtree: name=" << name << " gid=" << mds << " tree=" << tree << endl;
   }
 
   /*
@@ -170,14 +183,15 @@ string mds_subtree(path::path cinode)
       path::path p = path::path(tree.second[i]["dir"]["path"].asString());
       bool is_auth = tree.second[i]["dir"]["is_auth"].asBool();
       if (debug > 1)
-        cout << "  mds_sbutree INFO: checking if "
+        cout << "  INFO: mds_subtree: checking if "
              << " p=" << p << " is a parent or equal to cinode=" << cinode << endl;
 
       /* if the metadata server has our full path, save it */
       if (is_auth && cinode == p) {
-        cout << "  mds_subtree INFO: found exact match;"
-             << " is_auth=" << is_auth
-             << " cinode=" << cinode << " p=" << p << endl;
+        if (debug > 0)
+          cout << "  INFO: mds_subtree: found exact match;"
+               << " is_auth=" << is_auth
+               << " cinode=" << cinode << " p=" << p << endl;
         auth = tree.first;
       }
 
@@ -186,7 +200,7 @@ string mds_subtree(path::path cinode)
           p.size() > max_path.second.size() &&
           equal(p.begin(), p.end(), cinode.begin())) {
         if (debug > 0)
-          cout << "  mds_subtree INFO: found new max;"
+          cout << "  INFO: mds_subtree: found new max;"
                << " p=" << p 
                << " prev=" << max_path.second 
                << " p is subpath of cinode=" << cinode
@@ -400,10 +414,10 @@ void docker_monitor(path::path cinode)
   string mds_gid = mds_subtree(cinode);
   while(!flag) {
     string new_mds_gid = mds_subtree(cinode);
-    cout << "INFO: container " << container_name << " with path "
+    cout << "INFO: docker_monitor: container " << container_name << " with path "
          << cinode << " is on mds." << name(new_mds_gid) << endl;
     if (new_mds_gid != mds_gid) {
-      cout << "INFO: inode has moved from mds." << name(mds_gid)
+      cout << "INFO: docker_monitor: inode has moved from mds." << name(mds_gid)
            << " to mds." << name(new_mds_gid) << "." << endl;
       docker_rm(ip(mds_gid));
       docker_create(ip(new_mds_gid));
@@ -414,7 +428,7 @@ void docker_monitor(path::path cinode)
     boost::this_thread::sleep( boost::posix_time::seconds(1));
   }
 
-  cout << "INFO: cleaning cURL" << endl;
+  cout << "INFO: docker_monitor: cleaning cURL" << endl;
   curl_easy_cleanup(curl);
   curl_global_cleanup();
 }
