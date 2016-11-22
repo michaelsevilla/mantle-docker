@@ -10,9 +10,7 @@ RUN echo "==> Install deps" && \
     tar xzvf curl-7.51.0.tar.gz && \
     cd curl-7.51.0 && \
     make && \
-    make install && \
-    echo "==> Get Mantle Docker" && \
-    git clone https://github.com/michaelsevilla/mantle-docker.git /mantle-docker
+    make install
 
 ADD entrypoint.sh /
 ENV LD_LIBRARY_PATH=/usr/local/lib

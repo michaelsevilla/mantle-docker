@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #define MAXBUFLEN 1000000
+#define VERSION 1.0.0
 
 using namespace std;
 namespace po = boost::program_options;
@@ -40,7 +41,7 @@ void parse_args(int argc, char**argv)
   string path;
   po::options_description desc("Allowed options");
   desc.add_options()
-    ("help", "Produce help message")
+    ("help", "Produce help message and version")
     ("docker_skt", po::value<string>(&docker_skt)->default_value("/var/run/docker.sock"), "Socket of Docker daemon")
     ("username", po::value<string>(&username)->default_value("root"), "Username for SSHing around")
     ("container_name", po::value<string>(&container_name)->default_value("my_container"), "Name of the container")
@@ -52,12 +53,14 @@ void parse_args(int argc, char**argv)
   try { po::notify(vm); }
   catch (exception const& e) {
     cerr << boost::diagnostic_information(e) << endl;
-    cout << desc << "\n";
+    cout << "Mantle Docker version " << version
+         << "\n" << desc << "\n";
     exit (EXIT_FAILURE);
   }
 
   if (vm.count("help")) {
-    cout << desc << "\n";
+    cout << "Mantle Docker version " << version
+         << "\n" << desc << "\n";
     exit (EXIT_SUCCESS);
   }
 
