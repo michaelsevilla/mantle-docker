@@ -1,0 +1,6 @@
+{
+  "Image":"ivotron/stress-ng:latest",
+  "Detach":true,
+  "Tty":true,
+  "Env": ["BENCHMARKS=cpu-methods cpu-class"]
+}
