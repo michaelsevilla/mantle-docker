@@ -147,9 +147,11 @@ string mds_subtree(path::path cinode)
     string name = mdss["fsmap"]["filesystems"][0]["mdsmap"]["info"][mds]["name"].asString();
 
     /* construct command to send to servers admin daemon socket */
-    string cmd = "ssh " + username + "@" + ip(mds) + " \"docker exec ceph-dev /bin/bash -c \'";
+    string cmd = "ssh " + username + "@" + ip(mds) + " \"docker exec ";
     if (vstart == true)
-      cmd += "cd /ceph/build && bin/";
+      cmd += "ceph-dev /bin/bash -c \'cd /ceph/build && bin/";
+    else
+      cmd += "ceph-" + name + "-mds \'";
     cmd += "ceph daemon mds." + name + " get subtrees\'\" 2>/dev/null";
     if (debug > 1)
       cout << "INFO: mds_subtree: cmd=" << cmd << endl;
