@@ -151,7 +151,7 @@ string mds_subtree(path::path cinode)
     if (vstart == true)
       cmd += "ceph-dev /bin/bash -c \'cd /ceph/build && bin/";
     else
-      cmd += "ceph-" + name + "-mds \'";
+      cmd += "ceph-" + name + "-mds /bin/bash -c \'";
     cmd += "ceph daemon mds." + name + " get subtrees\'\" 2>/dev/null";
     if (debug > 1)
       cout << "INFO: mds_subtree: cmd=" << cmd << endl;
@@ -240,9 +240,8 @@ size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream) {
 void docker_ps(string docker_url)
 {
   /* Point at Docker */
-  string target = docker_url + "/containers/json";
+  string target = docker_url + ":2375/containers/json";
   curl_easy_setopt(curl, CURLOPT_URL, target.c_str());
-  curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, docker_skt.c_str());
 
   /* Stuff output in string */
   std::stringstream out;
@@ -260,7 +259,7 @@ void docker_ps(string docker_url)
   Json::Reader reader;
   reader.parse(out.str(), docker_ps);
 
-  cout << "-- Running containers:" << endl;
+  cout << "-- Running containers: target=" << target << endl;
   for (auto& container : docker_ps)
     for (auto& name : container["Names"])
       cout << "  " << name.asString() << endl;
@@ -273,9 +272,8 @@ void docker_ps(string docker_url)
 void docker_create(string docker_url)
 {
    /* Point at Docker */
-  string target = docker_url + "/containers/create?name=" + container_name;
+  string target = docker_url + ":2375/containers/create?name=" + container_name;
   curl_easy_setopt(curl, CURLOPT_URL, target.c_str());
-  curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, docker_skt.c_str());
 
   /* Stuff output in string */
   std::stringstream out;
@@ -317,10 +315,9 @@ void docker_create(string docker_url)
 void docker_start(string docker_url)
 {
    /* Point at Docker */
-  cout << "-- Starting containers:" << container_id << endl;
-  string target = docker_url + "/containers/" + container_id + "/start";
+  string target = docker_url + ":2375/containers/" + container_id + "/start";
   curl_easy_setopt(curl, CURLOPT_URL, target.c_str());
-  curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, docker_skt.c_str());
+  cout << "-- Starting containers:" << container_id << " target=" << target << endl;
 
    /* Stuff output in string */
   std::stringstream out;
@@ -339,9 +336,8 @@ void docker_start(string docker_url)
 void docker_rm(string docker_url)
 {
   /* Point at Docker */
-  string target = docker_url + "/containers/" + container_id + "?force=true";
+  string target = docker_url + ":2375/containers/" + container_id + "?force=true";
   curl_easy_setopt(curl, CURLOPT_URL, target.c_str());
-  curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, docker_skt.c_str());
 
    /* Stuff output in string */
   std::stringstream out;
@@ -354,7 +350,7 @@ void docker_rm(string docker_url)
   if (ret != CURLE_OK)
     cerr << "ERROR: docker rm: " << curl_easy_strerror(ret)
          << "\n\t target=" << target << endl;
-  cout << "-- Removed containers:" << endl;
+  cout << "-- Removed containers: target=" << target << endl;
   cout << "  " << out.str() << "\n" << endl;
   curl_easy_reset(curl);
 } 

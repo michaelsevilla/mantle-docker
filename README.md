@@ -12,3 +12,4 @@ Requirements:
 - ssh
 - jsoncpp
 - curl version > 7.40
+- docker daemon listening on all nodes

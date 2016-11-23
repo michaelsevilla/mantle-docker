@@ -21,7 +21,6 @@ dmake \
   -e CONFIGURE_FLAGS="-DWITH_TESTS=OFF" \
   -e RECONFIGURE="true" \
   cephbuilder/ceph:latest build-cmake
-cd -
 
 docker tag ceph-f628bac31aa0b5b2696b8defc4aa18d4bc2ef757-base ceph/daemon:f628bac
 cd -
@@ -34,3 +33,6 @@ docker commit --change='ENTRYPOINT ["/usr/bin/mantledock"]' tmp ceph/mantledock:
 docker rm -f tmp
 
 echo "Mantle Docker image is ceph/mantledock:f628bac; Ceph daemon image is ceph/daemon:f628bac"
+
+docker tag ceph/mantledock:f628bac piha.soe.ucsc.edu:5000/ceph/mantledock:f628bac 
+docker push piha.soe.ucsc.edu:5000/ceph/mantledock:f628bac
