@@ -185,8 +185,9 @@ string mds_subtree(path::path cinode)
       path::path p = path::path(tree.second[i]["dir"]["path"].asString());
       bool is_auth = tree.second[i]["dir"]["is_auth"].asBool();
       if (debug > 1)
-        cout << "  INFO: mds_subtree: checking if "
-             << " p=" << p << " is a parent or equal to cinode=" << cinode << endl;
+        cout << "  INFO: mds_subtree: checking if"
+             << " p=" << p << " is a parent or equal to cinode=" << cinode
+             << " max_path.gid=" << max_path.first << " max_path.p=" << max_path.second << endl;
 
       /* if the metadata server has our full path, save it */
       if (is_auth && cinode == p) {
@@ -295,7 +296,7 @@ void docker_create(string docker_url)
   /* Execute command */
   CURLcode ret = curl_easy_perform(curl);
   if (ret != CURLE_OK)
-    cerr << "ERROR: starting container: " << curl_easy_strerror(ret)
+    cerr << "ERROR: creating container: " << curl_easy_strerror(ret)
          << "\n\t target=" << target << endl;
 
   /* Get it into JSON */
@@ -306,7 +307,8 @@ void docker_create(string docker_url)
 
   container_id = docker_start["Id"].asString();
   if (container_id == "") {
-    cerr << "ERROR starting container: " << out.str() << endl;  
+    cerr << "ERROR creating container: " << out.str()
+         << "\n\t target=" << target << endl;
     exit(EXIT_FAILURE);
   }
   cout << "-- Creating containers:" << container_id << endl;
