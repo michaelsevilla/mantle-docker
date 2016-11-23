@@ -184,10 +184,11 @@ string mds_subtree(path::path cinode)
     for (int i = 0; i < n; i++) {
       path::path p = path::path(tree.second[i]["dir"]["path"].asString());
       bool is_auth = tree.second[i]["dir"]["is_auth"].asBool();
-      if (debug > 1)
+      if (debug > 0)
         cout << "  INFO: mds_subtree: checking if"
              << " p=" << p << " is a parent or equal to cinode=" << cinode
-             << " max_path.gid=" << max_path.first << " max_path.p=" << max_path.second << endl;
+             << " max_path.gid=" << max_path.first << " max_path.p=" << max_path.second 
+             << " auth=" << auth << endl;
 
       /* if the metadata server has our full path, save it */
       if (is_auth && cinode == p) {
