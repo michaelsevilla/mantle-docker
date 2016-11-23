@@ -168,6 +168,7 @@ string mds_subtree(path::path cinode)
     trees.push_back(pair<string, Json::Value>(mds, tree));
     if (debug > 1)
       cout << "INFO: mds_subtree: name=" << name << " gid=" << mds << " tree=" << tree << endl;
+    fclose(f);
   }
 
   /*
